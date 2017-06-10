@@ -1,32 +1,73 @@
 package llr
 
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkContext._
-import org.apache.spark.rdd.RDD
 import java.util.Random
-import scala.collection.mutable
-import org.apache.spark.serializer.KryoRegistrator
-import com.esotericsoftware.kryo.Kryo
-import org.apache.spark.SparkConf
+
+import org.apache.spark.SparkContext
+import org.apache.spark.rdd.RDD
+
+
+/** Case class that defines an Interaction between a User and an Item to be used in log-likelihood
+  * algorithm.
+  *
+  * @param user the User from the interaction input file
+  * @param item the Item from the interaction input file
+  *
+  */
 
 case class Interaction(val user: String, val item: String)
 
 object LLR {
+
+  /** Spark Application used as the first step in Like2Vec for generating the Log Likelihood Ratio for different
+    * pairs of Users and sets of Items.
+    *
+    * Requires passing the output option as first argument and location of input file
+    * that contains the relevant data as the second:
+    *
+    *    1. Different output options for configurations:
+    *         -d for Default
+    *         -m for MaxSale
+    *         -c for Continuous Ratio
+    *
+    *    2. The Path for the Dataset of the form (User, Item)
+    *
+    */
+
+
   val hdfs ="hdfs://ip-172-31-23-118.us-west-2.compute.internal:8020"
     // val inputFile =hdfs+"/user/hadoop/trainset"
   def main(args: Array[String]) {
     userSimilarites(
       "master",
        args(0),
+       args(1),
+       args(2),
        ",",
        2,
        100,
        500,
        12345)
   }
+
+  /** Finds out the similarities amongst Users by first reading the data from the
+    * User-Item interactions input file and then calls the loglikelihood method
+    * to implement the algorithm.
+    *
+    * @param master ? Not Used
+    * @param options Output options for LLR namely Default -d, MaxSale -m, Continuous Ratio -c
+    * @param choice Input option for LLR to find User-User -u or Item-Item -i Similarity
+    * @param interactionsFile Input file containing user,items data
+    * @param separator Delimiter used for separating user and item (eg. "," or "::")
+    * @param numSlices ? Not Used
+    * @param maxSimilarItemsperItem ? Not Used
+    * @param maxInteractionsPerUserOrItem Specifies maximum number of Interactions that can be taken
+    * @param seed Specifies Seed parameter of Hash Function used for randomization
+    */
    
   def userSimilarites(
     master:String,
+    options:String,
+    choice: String,
     interactionsFile:String,
     separator:String,
     numSlices:Int,
@@ -42,62 +83,191 @@ object LLR {
 
 //  val sc = new SparkContext(new SparkConf().setAppName("CooccurrenceAnalysis"));
 
-    //Reading Data from input file,RDD
+    /** Reading Data from input file,RDD */
+
     val rawInteractions = sc.textFile(interactionsFile)
     val header =rawInteractions.first()
     val rawInteractions_data = rawInteractions.filter(row => row != header)       
-    val  rawInteractions_set =rawInteractions_data.map { line =>
+    val rawInteractions_set =rawInteractions_data.map { line =>
     val fields = line.split(separator)
-    Interaction(fields(0), fields(1))
-  }
-  val interactions =
-    downSample(
-      sc, 
-      rawInteractions_set, 
-      maxInteractionsPerUserOrItem, 
-      seed)
-      interactions.cache()
-      val numInteractions = interactions.count()
-      val numInteractionsPerItem =
-        countsToDict(interactions.map(interaction => (interaction.user, 1)).
-        reduceByKey(_ + _))
-      sc.broadcast(numInteractionsPerItem)
-      val numItems =
-        countsToDict(interactions.map(interaction => (interaction.item, 1)).
-        reduceByKey(_ + _))
-      val cooccurrences = interactions.groupBy(_.item).
-        flatMap({ case (user, history) => {
+      Interaction(fields(0), fields(1))
+    }
+
+    /** interactions holds Number of Interactions of each item per user,
+      * or Number of Interactions of each user per item
+      *
+      */
+
+    val interactions =
+      downSample(
+        sc,
+        rawInteractions_set,
+        maxInteractionsPerUserOrItem,
+        seed)
+    interactions.cache()
+
+    val numInteractions = interactions.count()
+    val numInteractionsPerItem =
+      countsToDict(interactions.map(interaction => (interaction.user, 1))
+        .reduceByKey(_ + _))
+    sc.broadcast(numInteractionsPerItem)
+    val numItems =
+      countsToDict(interactions.map(interaction => (interaction.item, 1))
+        .reduceByKey(_ + _))
+
+
+
+
+    if(choice=="-u"){
+
+      val cooccurrences = interactions.groupBy(_.item)
+        .flatMap({ case (user, history) => {
           for (interactionA <- history; interactionB <- history)
-          yield { ((interactionA.user, interactionB.user), 1l)
-          }
-        } 
-      }).reduceByKey(_ + _)
-    
+            yield { ((interactionA.user, interactionB.user), 1l)
+            }
+        }
+        }).reduceByKey(_ + _)
+
+
+
+      /** Determining the values of interaction of user/item A with user/item B.
+        * Calls the loglikelihoodRatio method by using the above mentioned values to calculate
+        * logLikelihood Similarity metric.
+        *
+        */
+
       val similarities = cooccurrences.map({ case ((userA, userB), count) =>{
         val interactionsWithAandB = count
-        val interactionsWithAnotB = 
+        val interactionsWithAnotB =
           numInteractionsPerItem(userA) - interactionsWithAandB
-        val interactionsWithBnotA = 
+        val interactionsWithBnotA =
           numInteractionsPerItem(userB) - interactionsWithAandB
         val interactionsWithNeitherAnorB =
-          (numItems.size) - numInteractionsPerItem(userA) - 
-          numInteractionsPerItem(userB) + interactionsWithAandB
-        val logLikelihood = 
+          (numItems.size) - numInteractionsPerItem(userA) -
+            numInteractionsPerItem(userB) + interactionsWithAandB
+        val logLikelihood =
           LogLikelihood.logLikelihoodRatio(
-            interactionsWithAandB, 
+            interactionsWithAandB,
             interactionsWithAnotB,
-            interactionsWithBnotA, 
+            interactionsWithBnotA,
             interactionsWithNeitherAnorB)
         val logLikelihoodSimilarity = 1.0 - 1.0 / (1.0 + logLikelihood)
-        ((userA, userB), logLikelihoodSimilarity)
+        //((userA, userB), logLikelihoodSimilarity)
+
+        /** Calculating Row Entropy and Column Entropy to give out different output options for
+          * different configurations:
+          *
+          * -d for Default
+          * -m for MaxSale
+          * -c for Continuous Ratio
+          *
+          */
+
+        val rEntropy: Double = LogLikelihood.entropy(
+          interactionsWithAandB+interactionsWithAnotB,interactionsWithBnotA+interactionsWithNeitherAnorB)
+        val cEntropy: Double = LogLikelihood.entropy(
+          interactionsWithAandB+interactionsWithBnotA,interactionsWithAnotB+interactionsWithNeitherAnorB)
+
+        if (options == "-d"){
+          ((userA, userB), logLikelihoodSimilarity)
+        }
+        else if (options == "-m") {
+          ((userA, userB), logLikelihoodSimilarity /(2 * math.max(rEntropy, cEntropy)))
+        }
+        else if (options == "-c") {
+          ((userA, userB), logLikelihoodSimilarity / (1 + logLikelihoodSimilarity))
+        }
       }
-  })
-    
-   // similarities.repartition(1).saveAsTextFile(hdfs+"/user/hadoop/LlrTrainSet");
-    
-  similarities.repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
-  sc.stop()
+      })
+
+      // similarities.repartition(1).saveAsTextFile(hdfs+"/user/hadoop/LlrTrainSet");
+
+      similarities.repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+      sc.stop()
+
+    }
+
+    else if (choice == "-i"){
+
+      val cooccurrences = interactions.groupBy(_.user)
+        .flatMap({ case (item, history) => {
+          for (interactionA <- history; interactionB <- history)
+            yield { ((interactionA.item, interactionB.item), 1l)
+            }
+        }
+        }).reduceByKey(_ + _)
+
+
+
+      /** Determining the values of interaction of user/item A with user/item B.
+        * Calls the loglikelihoodRatio method by using the above mentioned values to calculate
+        * logLikelihood Similarity metric.
+        *
+        */
+
+      val similarities = cooccurrences.map({ case ((userA, userB), count) =>{
+        val interactionsWithAandB = count
+        val interactionsWithAnotB =
+          numInteractionsPerItem(userA) - interactionsWithAandB
+        val interactionsWithBnotA =
+          numInteractionsPerItem(userB) - interactionsWithAandB
+        val interactionsWithNeitherAnorB =
+          (numItems.size) - numInteractionsPerItem(userA) -
+            numInteractionsPerItem(userB) + interactionsWithAandB
+        val logLikelihood =
+          LogLikelihood.logLikelihoodRatio(
+            interactionsWithAandB,
+            interactionsWithAnotB,
+            interactionsWithBnotA,
+            interactionsWithNeitherAnorB)
+        val logLikelihoodSimilarity = 1.0 - 1.0 / (1.0 + logLikelihood)
+        //((userA, userB), logLikelihoodSimilarity)
+
+        /** Calculating Row Entropy and Column Entropy to give out different output options for
+          * different configurations:
+          *
+          * -d for Default
+          * -m for MaxSale
+          * -c for Continuous Ratio
+          *
+          */
+
+        val rEntropy: Double = LogLikelihood.entropy(
+          interactionsWithAandB+interactionsWithAnotB,interactionsWithBnotA+interactionsWithNeitherAnorB)
+        val cEntropy: Double = LogLikelihood.entropy(
+          interactionsWithAandB+interactionsWithBnotA,interactionsWithAnotB+interactionsWithNeitherAnorB)
+
+        if (options == "-d"){
+          ((userA, userB), logLikelihoodSimilarity)
+        }
+        else if (options == "-m") {
+          ((userA, userB), logLikelihoodSimilarity /(2 * math.max(rEntropy, cEntropy)))
+        }
+        else if (options == "-c") {
+          ((userA, userB), logLikelihoodSimilarity / (1 + logLikelihoodSimilarity))
+        }
+      }
+      })
+
+      // similarities.repartition(1).saveAsTextFile(hdfs+"/user/hadoop/LlrTrainSet");
+
+      similarities.repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+      sc.stop()
+
+    }
+
 }
+
+  /** Calculates the number of interactions of each user with every possible item
+    * and the number of interactions of each item with every possible user by calling the countsToDict
+    * method.
+    *
+    * @param sc Spark Context
+    * @param interactions Contains a user and item pair
+    * @param maxInteractionsPerUserOrItem Specifies maximum number of Interactions that can be taken
+    * @param seed Specifies Seed parameter of Hash Function used for randomization
+    * @return Number of Interactions of each item per user, or Number of Interactions of each user per item
+    */
 
   def downSample(
     sc:SparkContext,
@@ -106,18 +276,27 @@ object LLR {
     seed: Int) = {
     val numInteractionsPerUser = 
       countsToDict(interactions.map(interaction => (interaction.user, 1)).
-      reduceByKey(_ + _))
+        reduceByKey(_ + _))
     sc.broadcast(numInteractionsPerUser)
     val numInteractionsPerItem =
       countsToDict(interactions.map(interaction => (interaction.item, 1)).
-           reduceByKey(_ + _))
+        reduceByKey(_ + _))
     sc.broadcast(numInteractionsPerItem)
+
+    /** Implements a hash function to generate a random number
+      *
+      * @param x Seed value
+      * @return
+      */
+
     def hash(x: Int): Int = {
       val r = x ^ (x >>> 20) ^ (x >>> 12)
       r ^ (r >>> 7) ^ (r >>> 4)
     }
-/* apply the filtering on a per-partition basis to ensure repeatability in case of failures by
+
+    /** apply the filtering on a per-partition basis to ensure repeatability in case of failures by
        incorporating the partition index into the random seed */
+
     interactions.mapPartitionsWithIndex({ case (index, interactions) => {
       val random = new Random(hash(seed ^ index))
       interactions.filter({ interaction => {
@@ -133,8 +312,12 @@ object LLR {
   }
 })
 }
-  
-  //counts the number of Interactions per user and item.
+
+  /** Counts the number of Interactions per user, and Interactions per item.
+    *
+    * @param tuples Key Value pair where key is either user or item and the value is its count
+    *
+    */
 
   def countsToDict(tuples: RDD[(String, Int)]) = {
     tuples.collect().foldLeft(Map[String, Int]()) {
@@ -145,6 +328,17 @@ object LLR {
 }
 
 object LogLikelihood {
+
+  /** Determines Log Likelihood Ratio by calculating row entropy, column entropy and matrix entropy using
+    * following parameters.
+    *
+    * @param k11 Interactions of items With User A and User B, or users with Item A and Item B
+    * @param k12 Interactions of items With User A and not User B, or users with Item A and not Item B
+    * @param k21 Interactions of items With User B and not User A, or users with Item B and not Item A
+    * @param k22 Interactions of items With neither User B nor User A, or users with neither Item B nor Item A
+    * @return
+    *
+    */
 
   def logLikelihoodRatio(k11: Long, k12: Long, k21: Long, k22: Long) = {
     val rowEntropy: Double = entropy(k11 + k12, k21 + k22)
@@ -157,6 +351,13 @@ object LogLikelihood {
     }
   }
 
+
+  /** Calculates x*log(x) expression
+    *
+    * @param x Any input of long datatype
+    * @return
+    */
+
   private def xLogX(x: Long): Double = {
     if (x == 0) {
       0.0
@@ -166,9 +367,29 @@ object LogLikelihood {
     }
   }
 
+
+  /**
+    * Merely an optimization for the common two argument case of {@link #entropy(a: Long, b: Long)}
+    * @see #logLikelihoodRatio(long, long, long, long)
+    */
+
   private def entropy(a: Long, b: Long): Double = { xLogX(a + b) - xLogX(a) - xLogX(b) }
 
-  private def entropy(elements: Long*): Double = {
+  /**
+    * Calculates the unnormalized Shannon entropy.  This is
+    *
+    * -sum x_i log x_i / N = -N sum x_i/N log x_i/N
+    *
+    * where N = sum x_i
+    *
+    * If the x's sum to 1, then this is the same as the normal
+    * expression.  Leaving this un-normalized makes working with
+    * counts and computing the LLR easier.
+    *
+    * @return The entropy value for the elements
+    */
+
+  def entropy(elements: Long*): Double = {
     var sum: Long = 0
     var result: Double = 0.0
     for (element <- elements) {
