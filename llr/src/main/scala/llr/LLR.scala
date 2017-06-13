@@ -5,6 +5,27 @@ import java.util.Random
 import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
 
+/** Case class that defines all the Configurations
+  *
+  * @param master the User from the interaction input file
+  *
+  *
+  */
+
+
+case class Config(master: String = "master",
+                  options: String = "options",
+                  useroritem: String = "-u",
+                  threshold: Double = 0.6,
+                  interactionsFile:String = "/Users/Dungeoun/Documents/SkymindLabsInternship/raghu/Like2Vec/llr/src/main/resources/sampleinput/example1.txt",
+                  separator:String = ",",
+                  numSlices:Int = 2,
+                  maxSimilarItemsperItem:Int = 100,
+                  maxInteractionsPerUserOrItem:Int = 500,
+                  seed:Int = 12345
+                 )
+
+
 
 /** Case class that defines an Interaction between a User and an Item to be used in log-likelihood
   * algorithm.
@@ -34,6 +55,8 @@ object LLR {
     */
 
 
+
+
   val hdfs ="hdfs://ip-172-31-23-118.us-west-2.compute.internal:8020"
     // val inputFile =hdfs+"/user/hadoop/trainset"
   def main(args: Array[String]) {
@@ -41,7 +64,8 @@ object LLR {
       "master",
        args(0),
        args(1),
-       args(2),
+       args(2).toDouble,
+       args(3),
        ",",
        2,
        100,
@@ -55,7 +79,7 @@ object LLR {
     *
     * @param master ? Not Used
     * @param options Output options for LLR namely Default -d, MaxSale -m, Continuous Ratio -c
-    * @param choice Input option for LLR to find User-User -u or Item-Item -i Similarity
+    * @param useroritem Input option for LLR to find User-User -u or Item-Item -i Similarity
     * @param interactionsFile Input file containing user,items data
     * @param separator Delimiter used for separating user and item (eg. "," or "::")
     * @param numSlices ? Not Used
@@ -67,7 +91,8 @@ object LLR {
   def userSimilarites(
     master:String,
     options:String,
-    choice: String,
+    useroritem: String,
+    threshold: Double,
     interactionsFile:String,
     separator:String,
     numSlices:Int,
@@ -86,12 +111,22 @@ object LLR {
     /** Reading Data from input file,RDD */
 
     val rawInteractions = sc.textFile(interactionsFile)
-    val header =rawInteractions.first()
-    val rawInteractions_data = rawInteractions.filter(row => row != header)       
-    val rawInteractions_set =rawInteractions_data.map { line =>
-    val fields = line.split(separator)
-      Interaction(fields(0), fields(1))
-    }
+//    val header =rawInteractions.first()
+//    val rawInteractions_data = rawInteractions.filter(row => row != header)
+
+
+    val rawInteractions_set =
+      if (useroritem == "-u")
+        rawInteractions.map { line =>
+          val fields = line.split(separator)
+          Interaction(fields(0), fields(1))
+        }
+      else
+        rawInteractions.map { line =>
+          val fields = line.split(separator)
+          Interaction(fields(1), fields(0))
+        }
+
 
     /** interactions holds Number of Interactions of each item per user,
       * or Number of Interactions of each user per item
@@ -118,8 +153,6 @@ object LLR {
 
 
 
-    if(choice=="-u"){
-
       val cooccurrences = interactions.groupBy(_.item)
         .flatMap({ case (user, history) => {
           for (interactionA <- history; interactionB <- history)
@@ -136,7 +169,7 @@ object LLR {
         *
         */
 
-      val similarities = cooccurrences.map({ case ((userA, userB), count) =>{
+      val similarities = cooccurrences.map{ case ((userA, userB), count) =>
         val interactionsWithAandB = count
         val interactionsWithAnotB =
           numInteractionsPerItem(userA) - interactionsWithAandB
@@ -168,95 +201,48 @@ object LLR {
         val cEntropy: Double = LogLikelihood.entropy(
           interactionsWithAandB+interactionsWithBnotA,interactionsWithAnotB+interactionsWithNeitherAnorB)
 
-        if (options == "-d"){
-          ((userA, userB), logLikelihoodSimilarity)
-        }
-        else if (options == "-m") {
-          ((userA, userB), logLikelihoodSimilarity /(2 * math.max(rEntropy, cEntropy)))
-        }
-        else if (options == "-c") {
-          ((userA, userB), logLikelihoodSimilarity / (1 + logLikelihoodSimilarity))
-        }
+        val llrD: Double = logLikelihoodSimilarity
+        val llrM: Double = logLikelihoodSimilarity /(2 * math.max(rEntropy, cEntropy))
+        val llrC: Double = logLikelihoodSimilarity / (1 + logLikelihoodSimilarity)
+
+//        if (options == "-d" && llrD > threshold){
+        ((userA.toDouble, userB.toDouble), llrD, llrM, llrC)
+//        }
+//        else if (options == "-m" && llrM > threshold) {
+          //val outM = ((userA.toDouble, userB.toDouble), llrM)
+//        }
+//        else if (options == "-c" && llrC > threshold) {
+          //val outC((userA.toDouble, userB.toDouble), llrC)
+//        }
+
       }
-      })
+
+    val llrD1 = similarities.map(x=>x._2)
+    val llrM1 = similarities.map(x=>x._3)
+    val llrC1 = similarities.map(x=>x._4)
+
+    if (options == "-d") {
+      similarities.map(x=>((x._1),x._2)).filter(f=>f._2 > threshold).repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+    }
+    else if(options == "-m"){
+      similarities.map(x=>((x._1),x._3)).filter(f=>f._2 > threshold).repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+    }
+    else if (options == "-c"){
+      similarities.map(x=>((x._1),x._4)).filter(f=>f._2 > threshold).repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+    }
+
+
+      //output.saveAsTextFile("./src/main/resources/CellDataOP");
 
       // similarities.repartition(1).saveAsTextFile(hdfs+"/user/hadoop/LlrTrainSet");
 
-      similarities.repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
-      sc.stop()
-
+    //if(similarities.isEmpty()==false) {
+      //similarities.repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+      //sc.stop()
+    //}
     }
 
-    else if (choice == "-i"){
 
-      val cooccurrences = interactions.groupBy(_.user)
-        .flatMap({ case (item, history) => {
-          for (interactionA <- history; interactionB <- history)
-            yield { ((interactionA.item, interactionB.item), 1l)
-            }
-        }
-        }).reduceByKey(_ + _)
-
-
-
-      /** Determining the values of interaction of user/item A with user/item B.
-        * Calls the loglikelihoodRatio method by using the above mentioned values to calculate
-        * logLikelihood Similarity metric.
-        *
-        */
-
-      val similarities = cooccurrences.map({ case ((userA, userB), count) =>{
-        val interactionsWithAandB = count
-        val interactionsWithAnotB =
-          numInteractionsPerItem(userA) - interactionsWithAandB
-        val interactionsWithBnotA =
-          numInteractionsPerItem(userB) - interactionsWithAandB
-        val interactionsWithNeitherAnorB =
-          (numItems.size) - numInteractionsPerItem(userA) -
-            numInteractionsPerItem(userB) + interactionsWithAandB
-        val logLikelihood =
-          LogLikelihood.logLikelihoodRatio(
-            interactionsWithAandB,
-            interactionsWithAnotB,
-            interactionsWithBnotA,
-            interactionsWithNeitherAnorB)
-        val logLikelihoodSimilarity = 1.0 - 1.0 / (1.0 + logLikelihood)
-        //((userA, userB), logLikelihoodSimilarity)
-
-        /** Calculating Row Entropy and Column Entropy to give out different output options for
-          * different configurations:
-          *
-          * -d for Default
-          * -m for MaxSale
-          * -c for Continuous Ratio
-          *
-          */
-
-        val rEntropy: Double = LogLikelihood.entropy(
-          interactionsWithAandB+interactionsWithAnotB,interactionsWithBnotA+interactionsWithNeitherAnorB)
-        val cEntropy: Double = LogLikelihood.entropy(
-          interactionsWithAandB+interactionsWithBnotA,interactionsWithAnotB+interactionsWithNeitherAnorB)
-
-        if (options == "-d"){
-          ((userA, userB), logLikelihoodSimilarity)
-        }
-        else if (options == "-m") {
-          ((userA, userB), logLikelihoodSimilarity /(2 * math.max(rEntropy, cEntropy)))
-        }
-        else if (options == "-c") {
-          ((userA, userB), logLikelihoodSimilarity / (1 + logLikelihoodSimilarity))
-        }
-      }
-      })
-
-      // similarities.repartition(1).saveAsTextFile(hdfs+"/user/hadoop/LlrTrainSet");
-
-      similarities.repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
-      sc.stop()
-
-    }
-
-}
 
   /** Calculates the number of interactions of each user with every possible item
     * and the number of interactions of each item with every possible user by calling the countsToDict
