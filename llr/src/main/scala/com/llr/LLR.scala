@@ -23,6 +23,7 @@ case class Params(master: String = "master",
                   useroritem: String = "-u",
                   threshold: Double = 0.6,
                   interactionsFile:String = "/Users/Dungeoun/Documents/SkymindLabsInternship/raghu/Like2Vec/llr/src/main/resources/sampleinput/example1.txt",
+                  outputFile: String ="/Users/Dungeoun/Documents/SkymindLabsInternship/raghu/Like2Vec/llr/src/main/resources/CellDataOP",
                   separator:String = ",",
                   numSlices:Int = 2,
                   maxSimilarItemsperItem:Int = 100,
@@ -86,6 +87,9 @@ object LLR {
       opt[String]("interactionsFile")
         .text(s"interactionsFile: ${defaultParams.interactionsFile}")
         .action((x, c) => c.copy(interactionsFile = x))
+      opt[String]("outputFile")
+        .text(s"outputFile: ${defaultParams.outputFile}")
+        .action((x, c) => c.copy(outputFile = x))
       opt[String]("separator")
         .text(s"separator: ${defaultParams.separator}")
         .action((x, c) => c.copy(separator = x))
@@ -111,6 +115,7 @@ object LLR {
         params.useroritem,
         params.threshold,
         params.interactionsFile,
+        params.outputFile,
         params.separator,
         params.numSlices,
         params.maxSimilarItemsperItem,
@@ -143,6 +148,7 @@ object LLR {
     useroritem: String,
     threshold: Double,
     interactionsFile:String,
+    outputFile:String,
     separator:String,
     numSlices:Int,
     maxSimilarItemsperItem:Int,
@@ -165,7 +171,6 @@ object LLR {
 
 
     /** Reading Data from input file,RDD */
-
     val rawInteractions = sc.textFile(interactionsFile)
 //    val header =rawInteractions.first()
 //    val rawInteractions_data = rawInteractions.filter(row => row != header)
@@ -258,11 +263,11 @@ object LLR {
           interactionsWithAandB+interactionsWithBnotA,interactionsWithAnotB+interactionsWithNeitherAnorB)
 
         val llrD: Double = logLikelihoodSimilarity
-        val llrM: Double = logLikelihoodSimilarity /(2 * math.max(rEntropy, cEntropy))
-        val llrC: Double = logLikelihoodSimilarity / (1 + logLikelihoodSimilarity)
+        val llrM: Double = logLikelihoodSimilarity /(2.0 * math.max(rEntropy, cEntropy))
+        val llrC: Double = logLikelihoodSimilarity / (1.0 + logLikelihoodSimilarity)
 
 //        if (options == "-d" && llrD > threshold){
-        ((userA.toDouble, userB.toDouble), llrD, llrM, llrC)
+        ((userA, userB), llrD, llrM, llrC)
 //        }
 //        else if (options == "-m" && llrM > threshold) {
           //val outM = ((userA.toDouble, userB.toDouble), llrM)
@@ -273,18 +278,15 @@ object LLR {
 
       }
 
-    val llrD1 = similarities.map(x=>x._2)
-    val llrM1 = similarities.map(x=>x._3)
-    val llrC1 = similarities.map(x=>x._4)
 
     if (options == "-d") {
-      similarities.map(x=>((x._1),x._2)).filter(f=>f._2 > threshold).repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+      similarities.map(x=>((x._1),x._2)).filter(f=>f._2 > threshold).repartition(1).saveAsTextFile(outputFile);
     }
     else if(options == "-m"){
-      similarities.map(x=>((x._1),x._3)).filter(f=>f._2 > threshold).repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+      similarities.map(x=>((x._1),x._3)).repartition(1).saveAsTextFile(outputFile);
     }
     else if (options == "-c"){
-      similarities.map(x=>((x._1),x._4)).filter(f=>f._2 > threshold).repartition(1).saveAsTextFile("./src/main/resources/CellDataOP");
+      similarities.map(x=>((x._1),x._4)).repartition(1).saveAsTextFile(outputFile);
     }
 
 
